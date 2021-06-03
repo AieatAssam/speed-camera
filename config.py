@@ -11,21 +11,21 @@
 
 # Calibration Settings
 # --------------------
-calibrate = True         # Create a calibration image file with calibration hash markers 10 px per mark
+calibrate = False         # Create a calibration image file with calibration hash markers 10 px per mark
 
-cal_obj_px_L2R = 80      # L2R Moving Objects, Length of a calibration object in pixels
-cal_obj_mm_L2R = 4700.0  # L2R Moving Objects, Length of the calibration object in millimetres
+cal_obj_px_L2R = 310 # 80      # L2R Moving Objects, Length of a calibration object in pixels
+cal_obj_mm_L2R = 5531  # 4700.0  # L2R Moving Objects, Length of the calibration object in millimetres
 
-cal_obj_px_R2L = 85      # R2L Moving Objects, Length of a calibration object in pixels
-cal_obj_mm_R2L = 4700.0  # R2L Moving Objects, Length of the calibration object in millimetres
+cal_obj_px_R2L = 310 # 85      # R2L Moving Objects, Length of a calibration object in pixels
+cal_obj_mm_R2L = 5531 # 4700.0  # R2L Moving Objects, Length of the calibration object in millimetres
 
 # Note if tested speed is too low increase appropriate cal_obj_mm  value and redo speed test for desired direction.
 # IMPORTANT - If plugins Enabled Edit Settings in specified plugin file located in plugins folder.
 
 # Plugins overlay the config.py variable settings
 # -----------------------------------------------
-pluginEnable = False
-pluginName = "picam240" # Specify filename in plugins subfolder without .py extension per below
+pluginEnable = True
+pluginName = "picam480" # Specify filename in plugins subfolder without .py extension per below
                         # picam240, webcam240 (Recommended for RPI2 or greater)
                         # picam480, webcam480, picam720, webcam720  (can use RPI3 but Test)
                         # picam1080   (Experimental Not Recommended)
@@ -43,23 +43,23 @@ show_crop_on = False   # Same as show_thresh_on but in color. True=Show, False=D
 # ------------------------
 verbose = True         # True= Display basic status information on console False= Off
 display_fps = False    # True= Show average frame count every 1000 loops False= Off
-log_data_to_CSV = False # True= Save log data as CSV comma separated values  False= Off
-loggingToFile = False  # True= Send logging to file False= No Logging to File
+log_data_to_CSV = True # True= Save log data as CSV comma separated values  False= Off
+loggingToFile = True  # True= Send logging to file False= No Logging to File
 logFilePath = 'speed-cam.log'  # Location of log file when loggingToFile=True
 
 # Motion Event Settings
 # ---------------------
-SPEED_MPH = False      # Set Speed Units   kph=False  mph=True
-track_counter = 4      # one cpu core=4 four cores=10 Number of Consecutive Motion Events to trigger speed photo
+SPEED_MPH = True      # Set Speed Units   kph=False  mph=True
+track_counter = 8      # one cpu core=4 four cores=10 Number of Consecutive Motion Events to trigger speed photo
                        # Testing with RPI2 B one core using opencv ver 3.4.2
 MIN_AREA = 200         # Default= 200 Exclude all contours less than or equal to this sq-px Area
 show_out_range = True  # Default= True Show Out of Range Events per x_diff settings below False= Off
-x_diff_max = 20        # Default= 20 Exclude if max px away >= last motion event x position
+x_diff_max = 40        # Default= 20 Exclude if max px away >= last motion event x position
 x_diff_min = 1         # Default= 1 Exclude if min px away <= last event x position
 x_buf_adjust = 10      # Default= 10 Divides motion Rect x for L&R Buffer Space to Ensure contours are in
 track_timeout = 0.0    # Default= 0.0 Optional seconds to wait after track End (Avoids dual tracking)
 event_timeout = 0.3    # Default= 0.3 seconds to wait for next motion event before starting new track
-max_speed_over = 0     # Exclude track if Speed less than or equal to value specified 0=All
+max_speed_over = 5     # Exclude track if Speed less than or equal to value specified 0=All
                        # Can be useful to exclude pedestrians and/or bikes, Etc or track only fast objects
 
 # Note: To see motion tracking crop area on images, Set variable image_show_motion_area = True
@@ -71,8 +71,8 @@ max_speed_over = 0     # Exclude track if Speed less than or equal to value spec
 
 # Allow user to customize the motion crop area (height) y values
 # If variables not found then values will be set automatically base on image size.
-# y_upper = 80         # uncomment and change values to override auto calculate
-# y_lower = 180        # uncomment and change values to override auto calculate
+y_upper = 160         # uncomment and change values to override auto calculate
+y_lower = 200        # uncomment and change values to override auto calculate
 
 # Camera Settings
 # ---------------
@@ -93,20 +93,22 @@ WEBCAM_VFLIP = False   # Default= False USB Webcam flip image vertically
 # ------------------
 CAMERA_WIDTH = 320     # Image stream width for opencv motion scanning Default=320
 CAMERA_HEIGHT = 240    # Image stream height for opencv motion scanning  Default=240
-CAMERA_FRAMERATE = 20  # Default= 20 Frame rate for video stream V2 picam can be higher
+CAMERA_FRAMERATE = 30  # Default= 20 Frame rate for video stream V2 picam can be higher
 CAMERA_ROTATION = 0    # Rotate camera image valid values are 0, 90, 180, 270
-CAMERA_VFLIP = True    # Flip the camera image vertically if required
-CAMERA_HFLIP = True    # Flip the camera image horizontally if required
+CAMERA_VFLIP = False    # Flip the camera image vertically if required
+CAMERA_HFLIP = False    # Flip the camera image horizontally if required
 
 # Camera Image Settings
 # ---------------------
+processing_scale = 1.0        # scale image and all values according to this multiplier prior to processing
+                              # e.g. operate at quarter size for value of 0.25
 image_path = "media/images"   # folder name to store images
 image_prefix = "speed-"       # image name prefix
 image_format = ".jpg"         # Default = ".jpg"  image Formats .jpg .jpeg .png .gif .bmp
 image_jpeg_quality = 95       # Set the quality of the jpeg. Default = 95 https://docs.opencv.org/3.4/d8/d6a/group__imgcodecs__flags.html#ga292d81be8d76901bff7988d18d2b42ac
 image_jpeg_optimize = False   # Optimize the image. Default = False https://docs.opencv.org/3.4/d8/d6a/group__imgcodecs__flags.html#ga292d81be8d76901bff7988d18d2b42ac
 image_show_motion_area = True # True= Display motion detection rectangle area on saved images
-image_filename_speed = False  # True= Prefix filename with speed value
+image_filename_speed = True  # True= Prefix filename with speed value
 image_text_on = True          # True= Show Text on speed images   False= No Text on images
 image_text_bottom = True      # True= Show image text at bottom otherwise at top
 image_font_size = 12          # Default= 12 Font text height in px for text on images

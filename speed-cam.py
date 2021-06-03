@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
 speed-cam.py written by Claude Pageau
 Windows, Unix, Raspberry (Pi) - python opencv2 Speed tracking
@@ -106,6 +106,7 @@ default_settings = {
     'track_timeout':0.0,
     'event_timeout':0.3,
     'max_speed_over':0,
+    'processing_scale':1.0,
     'CAM_LOCATION':'None',
     'WEBCAM_SRC':0,
     'WEBCAM_WIDTH':320,
@@ -373,8 +374,8 @@ fix_msg = ("""
     """)
 
 # Calculate conversion from camera pixel width to actual speed.
-px_to_kph_L2R = float(cal_obj_mm_L2R/cal_obj_px_L2R * 0.0036)
-px_to_kph_R2L = float(cal_obj_mm_R2L/cal_obj_px_R2L * 0.0036)
+px_to_kph_L2R = float(cal_obj_mm_L2R/cal_obj_px_L2R * 0.0036) * processing_scale
+px_to_kph_R2L = float(cal_obj_mm_R2L/cal_obj_px_R2L * 0.0036) * processing_scale
 
 if SPEED_MPH:
     speed_units = "mph"
@@ -400,13 +401,14 @@ class PiVideoStream:
         self.camera.resolution = resolution
         self.camera.rotation = rotation
         self.camera.framerate = framerate
+        
         self.camera.hflip = hflip
         self.camera.vflip = vflip
         self.rawCapture = PiRGBArray(self.camera, size=resolution)
         self.stream = self.camera.capture_continuous(self.rawCapture,
                                                      format="bgr",
                                                      use_video_port=True)
-
+        logging.info(f'Pi Camera recording {self.camera.resolution} at {self.camera.framerate}')
         """
         initialize the frame and the variable used to indicate
         if the thread should be stopped
@@ -1028,10 +1030,10 @@ def speed_get_contours(image, grayimage1):
     """
     image_ok = False
     start_time = time.time()
+    snap_time = time.time()
     timeout = 60 # seconds to wait if camera communications is lost.
                  # Note to self.  Look at adding setting to config.py
     while not image_ok:
-        image = vs.read() # Read image data from video steam thread instance
         # crop image to motion tracking area only
         try:
             image_crop = image[y_upper:y_lower, x_left:x_right]
@@ -1044,32 +1046,39 @@ def speed_get_contours(image, grayimage1):
                 sys.exit(1)
             else:
                 image_ok = False
-
+                image = vs.read()  # Read image data from video steam thread instance
+                snap_time = time.time()
+    # Rescale image for processing
+    image_crop = cv2.resize(image_crop, None, fx=processing_scale, fy=processing_scale,
+                            interpolation=cv2.INTER_NEAREST) # nearest neighbour is very fast and sufficient for us
     # Convert to gray scale, which is easier
     grayimage2 = cv2.cvtColor(image_crop, cv2.COLOR_BGR2GRAY)
+    grayimage2 = cv2.GaussianBlur(grayimage2, (BLUR_SIZE // 2 * 2 + 1, BLUR_SIZE // 2 * 2 + 1), 0)
     # Get differences between the two greyed images
     global differenceimage
     differenceimage = cv2.absdiff(grayimage1, grayimage2)
     # Blur difference image to enhance motion vectors
-    differenceimage = cv2.blur(differenceimage, (BLUR_SIZE, BLUR_SIZE))
+    #differenceimage = cv2.blur(differenceimage, (BLUR_SIZE, BLUR_SIZE))
     # Get threshold of blurred difference image
     # based on THRESHOLD_SENSITIVITY variable
     retval, thresholdimage = cv2.threshold(differenceimage,
                                            THRESHOLD_SENSITIVITY,
                                            255, cv2.THRESH_BINARY)
+    # dilate to eliminate small gaps
+    thresholdimage = cv2.dilate(thresholdimage, None)
     try:
-        # opencv 2 syntax default
-        contours, hierarchy = cv2.findContours(thresholdimage,
-                                               cv2.RETR_EXTERNAL,
-                                               cv2.CHAIN_APPROX_SIMPLE)
-    except ValueError:
         # opencv 3 syntax
         thresholdimage, contours, hierarchy = cv2.findContours(thresholdimage,
                                                                cv2.RETR_EXTERNAL,
                                                                cv2.CHAIN_APPROX_SIMPLE)
+    except ValueError:
+        # opencv 2 syntax default
+        contours, hierarchy = cv2.findContours(thresholdimage,
+                                               cv2.RETR_EXTERNAL,
+                                               cv2.CHAIN_APPROX_SIMPLE)
     # Update grayimage1 to grayimage2 ready for next image2
     grayimage1 = grayimage2
-    return grayimage1, contours
+    return grayimage1, contours, snap_time
 
 #------------------------------------------------------------------------------
 def speed_image_add_lines(image, color):
@@ -1108,6 +1117,16 @@ def speed_notify():
         logging.warn("IMPORTANT: Camera Is In Calibration Mode ....")
 
     logging.info("Begin Motion Tracking .....")
+
+
+from typing import List
+import pandas as pd
+from scipy import stats  
+def filter_outliers(data: List, abs_z_limit: float = 3) -> List:
+    df = pd.DataFrame({'data': data})
+    df['z_score'] = stats.zscore(df['data'])
+    return df.query(f'z_score > -{abs_z_limit} & z_score < {abs_z_limit}')['data'].tolist()
+
 
 #------------------------------------------------------------------------------
 def speed_camera():
@@ -1166,6 +1185,9 @@ def speed_camera():
     try:
         # crop image to motion tracking area only
         image_crop = image2[y_upper:y_lower, x_left:x_right]
+        image_crop = cv2.resize(image_crop,
+                                None, fx=processing_scale, fy=processing_scale,
+                                interpolation=cv2.INTER_NEAREST)  # nearest neighbour is very fast and sufficient for us
     except:
         vs.stop()
         logging.warn("Problem Connecting To Camera Stream.")
@@ -1173,6 +1195,7 @@ def speed_camera():
         time.sleep(4)
         return
     grayimage1 = cv2.cvtColor(image_crop, cv2.COLOR_BGR2GRAY)
+    grayimage1 = cv2.GaussianBlur(grayimage1, (BLUR_SIZE // 2 * 2 + 1, BLUR_SIZE // 2 * 2 + 1), 0)
     track_count = 0
     speed_list = []
     event_timer = time.time()
@@ -1182,12 +1205,12 @@ def speed_camera():
     image_sign_view_time = time.time()
     while still_scanning:  # process camera thread images and calculate speed
         image2 = vs.read() # Read image data from video steam thread instance
-        grayimage1, contours = speed_get_contours(image2, grayimage1)
+        grayimage1, contours, snap_time = speed_get_contours(image2, grayimage1)
         # if contours found, find the one with biggest area
         if contours:
             total_contours = len(contours)
             motion_found = False
-            biggest_area = MIN_AREA
+            biggest_area = MIN_AREA * processing_scale * processing_scale
             for c in contours:
                 # get area of contour
                 found_area = cv2.contourArea(c)
@@ -1195,7 +1218,7 @@ def speed_camera():
                     (x, y, w, h) = cv2.boundingRect(c)
                     # check if object contour is completely within crop area
                     if (x > x_buf and x + w < x_right - x_left - x_buf):
-                        cur_track_time = time.time() # record cur track time
+                        cur_track_time = snap_time # record cur track time
                         track_x = x
                         track_y = y
                         track_w = w  # movement width of object contour
@@ -1205,7 +1228,7 @@ def speed_camera():
             if motion_found:
                 # Check if last motion event timed out
                 reset_time_diff = time.time() - event_timer
-                if  reset_time_diff > event_timeout:
+                if reset_time_diff > event_timeout:
                     # event_timer exceeded so reset for new track
                     event_timer = time.time()
                     first_event = True
@@ -1242,8 +1265,8 @@ def speed_camera():
                         cal_obj_mm = cal_obj_mm_R2L
                     # check if movement is within acceptable distance
                     # range of last event
-                    if (abs(end_pos_x - prev_pos_x) > x_diff_min and
-                            abs(end_pos_x - prev_pos_x) < x_diff_max):
+                    if (abs(end_pos_x - prev_pos_x) > x_diff_min * processing_scale and
+                            abs(end_pos_x - prev_pos_x) < x_diff_max * processing_scale):
                         track_count += 1  # increment
                         cur_track_dist = abs(end_pos_x - prev_pos_x)
                         if travel_direction == 'L2R':
@@ -1262,7 +1285,14 @@ def speed_camera():
                         if track_count >= track_counter:
                             tot_track_dist = abs(track_x - start_pos_x)
                             tot_track_time = abs(track_start_time - cur_track_time)
-                            ave_speed = sum(speed_list) / float(len(speed_list))
+                            #ave_speed = sum(speed_list) / float(len(speed_list))
+                            # replace with smarter outlier filtering variant
+                            filtered_speeds = filter_outliers(speed_list, 2)
+                            ave_speed = np.mean(filtered_speeds)
+                            if len(filtered_speeds) < len(speed_list):
+                                filtered_count = len(speed_list)-len(filtered_speeds)
+                                speeds_remaining_string = " ".join(["%.2f" % x for x in filtered_speeds])
+                                logging.info(f'Filtered {filtered_count} outliers, leaving [{speeds_remaining_string}]')
                             # Track length exceeded so take process speed photo
                             if ave_speed > max_speed_over or calibrate:
                                 logging.info(" Add - %i/%i xy(%i,%i) %3.2f %s"
@@ -1314,10 +1344,10 @@ def speed_camera():
                                                    cvGreen, LINE_THICKNESS)
                                     else:
                                         cv2.rectangle(prev_image,
-                                                      (int(track_x + x_left),
-                                                       int(track_y + y_upper)),
-                                                      (int(track_x + x_left + track_w),
-                                                       int(track_y + y_upper + track_h)),
+                                                      (int(track_x / processing_scale + x_left),
+                                                       int(track_y / processing_scale + y_upper)),
+                                                      (int(track_x / processing_scale + x_left + track_w / processing_scale),
+                                                       int(track_y / processing_scale + y_upper + track_h / processing_scale)),
                                                       cvGreen, LINE_THICKNESS)
                                 big_image = cv2.resize(prev_image,
                                                        (image_width,
@@ -1355,7 +1385,7 @@ def speed_camera():
                                                 image_font_thickness)
                                 logging.info(" Saved %s", filename)
                                 # Save resized image. If jpg format, user can customize image quality 1-100 (higher is better)
-                                # and/or enble/disable optimization per config.py settings.
+                                # and/or enable/disable optimization per config.py settings.
                                 # otherwise if png, bmp, gif, etc normal image write will occur
                                 if image_format.lower() == ".jpg" or image_format.lower() == ".jpeg":
                                     cv2.imwrite(filename, big_image, [int(cv2.IMWRITE_JPEG_QUALITY), image_jpeg_quality,
@@ -1382,7 +1412,7 @@ def speed_camera():
                                                   log_time.minute,
                                                   log_time.second,
                                                   quote))
-                                m_area = track_w*track_h
+                                m_area = track_w*track_h / processing_scale / processing_scale
                                 ave_speed = round(ave_speed, 2)
                                 if WEBCAM:
                                     camera = "WebCam"
@@ -1399,13 +1429,13 @@ def speed_camera():
                                               ave_speed, speed_units, filename,
                                               image_width, image_height, image_bigger,
                                               travel_direction, plugin_name,
-                                              track_x, track_y,
-                                              track_w, track_h, m_area,
+                                              track_x / processing_scale, track_y / processing_scale,
+                                              track_w / processing_scale, track_h / processing_scale, m_area,
                                               x_left, x_right,
                                               y_upper, y_lower,
                                               max_speed_over,
                                               MIN_AREA, track_counter,
-                                              cal_obj_px, cal_obj_mm, '', CAM_LOCATION)
+                                              cal_obj_px / processing_scale, cal_obj_mm, '', CAM_LOCATION)
 
                                 # Insert speed_data into sqlite3 database table
                                 # Note cam_location and status may not be in proper order
@@ -1444,9 +1474,9 @@ def speed_camera():
                                                        quote,
                                                        filename,
                                                        quote,
-                                                       track_x, track_y,
-                                                       track_w, track_h,
-                                                       track_w * track_h,
+                                                       track_x / processing_scale, track_y / processing_scale,
+                                                       track_w / processing_scale, track_h / processing_scale,
+                                                       track_w * track_h / processing_scale / processing_scale,
                                                        quote,
                                                        travel_direction,
                                                        quote,
@@ -1473,9 +1503,9 @@ def speed_camera():
                                 logging.info("End  - %s Ave Speed %.1f %s Tracked %i px in %.3f sec Calib %ipx %imm",
                                              travel_direction,
                                              ave_speed, speed_units,
-                                             tot_track_dist,
+                                             tot_track_dist / processing_scale,
                                              tot_track_time,
-                                             cal_obj_px,
+                                             cal_obj_px / processing_scale,
                                              cal_obj_mm)
 
                                 print(horz_line)
@@ -1490,7 +1520,7 @@ def speed_camera():
                                              " max_speed_over=%i  %i px in %.3f sec"
                                              " C=%i A=%i sqpx",
                                              ave_speed, speed_units,
-                                             max_speed_over, tot_track_dist,
+                                             max_speed_over, tot_track_dist / processing_scale,
                                              tot_track_time, total_contours,
                                              biggest_area)
                                 # Optional Wait to avoid dual tracking
@@ -1510,12 +1540,12 @@ def speed_camera():
                             logging.info(" Add - %i/%i xy(%i,%i) %3.2f %s"
                                          " D=%i/%i C=%i %ix%i=%i sqpx %s",
                                          track_count, track_counter,
-                                         track_x, track_y,
+                                         track_x / processing_scale, track_y / processing_scale,
                                          cur_ave_speed, speed_units,
-                                         abs(track_x - prev_pos_x),
+                                         abs(track_x - prev_pos_x) / processing_scale,
                                          x_diff_max,
                                          total_contours,
-                                         track_w, track_h, biggest_area,
+                                         track_w / processing_scale, track_h / processing_scale, biggest_area / processing_scale / processing_scale,
                                          travel_direction)
                             end_pos_x = track_x
                             # valid motion found so update event_timer
@@ -1525,15 +1555,15 @@ def speed_camera():
                         if show_out_range:
                             # movements exceeds Max px movement
                             # allowed so Ignore and do not update event_timer
-                            if abs(track_x - prev_pos_x) >= x_diff_max:
+                            if abs(track_x - prev_pos_x) >= x_diff_max / processing_scale:
                                 logging.info(" Out - %i/%i xy(%i,%i) Max D=%i>=%ipx"
                                              " C=%i %ix%i=%i sqpx %s",
                                              track_count, track_counter,
-                                             track_x, track_y,
-                                             abs(track_x - prev_pos_x),
+                                             track_x / processing_scale, track_y / processing_scale,
+                                             abs(track_x - prev_pos_x) / processing_scale,
                                              x_diff_max,
                                              total_contours,
-                                             track_w, track_h, biggest_area,
+                                             track_w / processing_scale, track_h / processing_scale, biggest_area / processing_scale / processing_scale,
                                              travel_direction)
                                 # if track_count is over half way then do not start new track
                                 if track_count > track_counter / 2:
@@ -1546,11 +1576,11 @@ def speed_camera():
                                 logging.info(" Out - %i/%i xy(%i,%i) Min D=%i<=%ipx"
                                              " C=%i %ix%i=%i sqpx %s",
                                              track_count, track_counter,
-                                             track_x, track_y,
-                                             abs(track_x - end_pos_x),
+                                             track_x / processing_scale, track_y / processing_scale,
+                                             abs(track_x - end_pos_x) / processing_scale,
                                              x_diff_min,
                                              total_contours,
-                                             track_w, track_h, biggest_area,
+                                             track_w / processing_scale, track_h / processing_scale, biggest_area / processing_scale / processing_scale,
                                              travel_direction)
                                 # Restart Track if first event otherwise continue
                                 if track_count == 0:
@@ -1561,15 +1591,15 @@ def speed_camera():
                     # otherwise a rectangle around most recent contour
                     if SHOW_CIRCLE:
                         cv2.circle(image2,
-                                   (int(track_x + x_left * WINDOW_BIGGER),
-                                    int(track_y + y_upper * WINDOW_BIGGER)),
+                                   (int(track_x / processing_scale + x_left * WINDOW_BIGGER),
+                                    int(track_y / processing_scale + y_upper * WINDOW_BIGGER)),
                                    CIRCLE_SIZE, cvGreen, LINE_THICKNESS)
                     else:
                         cv2.rectangle(image2,
-                                      (int(x_left + track_x),
-                                       int(y_upper + track_y)),
-                                      (int(x_left + track_x + track_w),
-                                       int(y_upper + track_y + track_h)),
+                                      (int(x_left + track_x / processing_scale),
+                                       int(y_upper + track_y / processing_scale)),
+                                      (int(x_left + track_x / processing_scale + track_w / processing_scale),
+                                       int(y_upper + track_y / processing_scale + track_h / processing_scale)),
                                       cvGreen, LINE_THICKNESS)
         if gui_window_on:
             # cv2.imshow('Difference Image',difference image)

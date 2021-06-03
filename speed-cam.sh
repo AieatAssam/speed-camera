@@ -20,7 +20,8 @@ fi
 if [ -z "$( pgrep -f $progname )" ]; then
   if [ "$1" = "start" ]; then
      echo "START   - Start $progname in Background ..."
-     ./$progname >/dev/null 2>&1 &
+     #./$progname >/dev/null 2>&1 &
+     python3 ./$progname >/dev/null 2>&1 &
   fi
 else
   if [ "$1" = "stop" ]; then
