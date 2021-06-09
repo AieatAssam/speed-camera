@@ -42,4 +42,4 @@ image_bigger = 1.5     # Default= 1.5 Resize saved speed image by value
 image_font_size = 16   # Default= 18 Font text height in px for text on images
 
 # ---------------------------------------------- End of User Variables -----------------------------------------------------
-#BLUR_SIZE=20
+BLUR_SIZE=5
