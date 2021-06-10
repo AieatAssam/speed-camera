@@ -1069,18 +1069,61 @@ def get_cropped_grey_frame():
 
     return image, current_gray_image, snap_time
 
+
+def get_cropped_colour_frame():
+    start_time = time.time()
+    image_ok = False
+    timeout = 60  # seconds to wait if camera communications is lost.
+    # Note to self.  Look at adding setting to config.py
+    image = vs.read()
+    snap_time = time.time()
+
+    while not image_ok:
+        # crop image to motion tracking area only
+        try:
+            # based on https://dev.to/yoursunny/gpu-accelerated-contour-detection-on-picamera-1p7c
+            fwidth = (CAMERA_WIDTH + 31) // 32 * 32
+            fheight = (CAMERA_HEIGHT + 15) // 16 * 16
+            image_crop = image[y_upper:y_lower, x_left:x_right]
+            image_ok = True
+        except (ValueError, TypeError) as e:
+            logging.error("image Stream Image is Not Complete. Cannot Crop. Retry.")
+            logging.error(e)
+            if time.time() - start_time > timeout:
+                logging.error("%i second timeout exceeded.  Partial or No images received.", timeout)
+                logging.error("Possible camera or communication problem.  Please Investigate.")
+                sys.exit(1)
+            else:
+                image_ok = False
+                image = vs.read()  # Read image data from video steam thread instance
+                snap_time = time.time()
+    image_crop = cv2.resize(image_crop, None, fx=processing_scale, fy=processing_scale,
+                            interpolation=cv2.INTER_NEAREST) # we want fast resize!
+    # apply median blur to clear salt and pepper noise from camera, this is cheap computationally
+    image_crop = cv2.medianBlur(image_crop, 3)
+
+    return image, image_crop, snap_time
+
+
+background_subtractor = cv2.createBackgroundSubtractorMOG2(detectShadows=False)
+
 #------------------------------------------------------------------------------
-def speed_get_contours(previous_gray_image):
+def speed_get_contours():
     """
     Read Camera image and crop and process
     with opencv to detect motion contours.
     Added timeout in case camera has a problem.
     """
-    full_image, current_gray_image, snap_time = get_cropped_grey_frame()
+    global background_subtractor
+    full_image, current_cropped_image, snap_time = get_cropped_colour_frame()
+
+    motion_image = background_subtractor.apply(current_cropped_image)
+
 
     # Get differences between the two greyed images
     global differenceimage
-    differenceimage = cv2.absdiff(previous_gray_image, current_gray_image)
+
+    differenceimage = motion_image
     # Blur difference image to enhance motion vectors
     #differenceimage = cv2.blur(differenceimage, (BLUR_SIZE, BLUR_SIZE))
     # Get threshold of blurred difference image
@@ -1090,6 +1133,7 @@ def speed_get_contours(previous_gray_image):
                                            255, cv2.THRESH_BINARY)
     # dilate to eliminate small gaps
     thresholdimage = cv2.dilate(thresholdimage, None)
+    thresholdimage = cv2.erode(thresholdimage, None)
     try:
         # opencv 3 syntax
         thresholdimage, contours, hierarchy = cv2.findContours(thresholdimage,
@@ -1100,9 +1144,7 @@ def speed_get_contours(previous_gray_image):
         contours, hierarchy = cv2.findContours(thresholdimage,
                                                cv2.RETR_EXTERNAL,
                                                cv2.CHAIN_APPROX_SIMPLE)
-    # Update grayimage1 to grayimage2 ready for next image2
-    previous_gray_image = current_gray_image
-    return full_image, previous_gray_image, contours, snap_time
+    return full_image, contours, snap_time
 
 #------------------------------------------------------------------------------
 def speed_image_add_lines(image, color):
@@ -1203,8 +1245,6 @@ def speed_camera():
         logging.warn("If necessary physically flip camera and")
         logging.warn("Set config.py WEBCAM_HFLIP and WEBCAM_VFLIP to False")
 
-    full_image, grayimage1, _ = get_cropped_grey_frame()
-
     track_count = 0
     speed_list = []
     event_timer = time.time()
@@ -1213,7 +1253,7 @@ def speed_camera():
     image_sign_view = cv2.resize(image_sign_bg, (image_sign_resize))
     image_sign_view_time = time.time()
     while still_scanning:  # process camera thread images and calculate speed
-        full_image, grayimage1, contours, snap_time = speed_get_contours(grayimage1)
+        full_image, contours, snap_time = speed_get_contours()
         # if contours found, find the one with biggest area
         if contours:
             total_contours = len(contours)
