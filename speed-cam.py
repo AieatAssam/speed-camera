@@ -45,6 +45,7 @@ Note to Self - Look at eliminating python variable camel case and use all snake 
 from __future__ import print_function
 
 import statistics
+from queue import Queue
 
 progVer = "11.0"  # current version of this python script
 
@@ -457,6 +458,59 @@ class PiVideoStream:
         self.stopped = True
         if self.thread is not None:
             self.thread.join()
+
+
+class PiOpenCVVideoStream:
+    def __init__(self, resolution=(CAMERA_WIDTH, CAMERA_HEIGHT),
+                 framerate=CAMERA_FRAMERATE):
+        '''
+        PiCamera capture using pure OpenCV. Based on example code from
+        https://stackoverflow.com/questions/61630221/low-fps-using-opencv-with-picamera-python
+        :param resolution:
+        :type resolution:
+        :param framerate:
+        :type framerate:
+        '''
+        self.cap = cv2.VideoCapture(0)
+        self.cap.set(cv2.CAP_PROP_FPS, CAMERA_FRAMERATE)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+        self.q = Queue()
+        self.thread = None
+        self.stopped = False
+
+    def _update(self):
+        """ keep looping infinitely until the thread is stopped """
+        while not self.stopped:
+            ret, frame = self.cap.read()
+            if not ret:
+                time.sleep(0.001)
+            else:
+                if not self.q.empty():
+                    try:
+                        self.q.get_nowait()  # discard previous (unprocessed) frame
+                    except Queue.Empty:
+                        pass
+                self.q.put(frame)
+
+    def start(self):
+        """ start the thread to read frames from the video stream """
+        self.thread = Thread(target=self._update, args=())
+        self.thread.setDaemon(True)
+        self.thread.setName('video_grabber')
+        self.thread.start()
+        return self
+
+    def stop(self):
+        """ indicate that the thread should be stopped """
+        self.stopped = True
+        if self.thread is not None:
+            self.thread.join()
+        self.cap.release()
+
+    def read(self):
+        """ return the frame most recently read """
+        return self.q.get()
 
 #------------------------------------------------------------------------------
 class WebcamVideoStream:
@@ -1099,6 +1153,7 @@ def get_cropped_colour_frame():
                 snap_time = time.time()
     image_crop = cv2.resize(image_crop, None, fx=processing_scale, fy=processing_scale,
                             interpolation=cv2.INTER_NEAREST) # we want fast resize!
+    image_crop = cv2.GaussianBlur(image_crop, (BLUR_SIZE // 2 * 2 + 1, BLUR_SIZE // 2 * 2 + 1), cv2.BORDER_DEFAULT)
     # apply median blur to clear salt and pepper noise from camera, this is cheap computationally
     image_crop = cv2.medianBlur(image_crop, 3)
 
@@ -1144,7 +1199,7 @@ def speed_get_contours():
         contours, hierarchy = cv2.findContours(thresholdimage,
                                                cv2.RETR_EXTERNAL,
                                                cv2.CHAIN_APPROX_SIMPLE)
-    return full_image, contours, snap_time
+    return full_image, current_cropped_image, contours, snap_time
 
 #------------------------------------------------------------------------------
 def speed_image_add_lines(image, color):
@@ -1253,7 +1308,7 @@ def speed_camera():
     image_sign_view = cv2.resize(image_sign_bg, (image_sign_resize))
     image_sign_view_time = time.time()
     while still_scanning:  # process camera thread images and calculate speed
-        full_image, contours, snap_time = speed_get_contours()
+        full_image, cropped_image, contours, snap_time = speed_get_contours()
         # if contours found, find the one with biggest area
         if contours:
             total_contours = len(contours)
@@ -1360,7 +1415,7 @@ def speed_camera():
                                              travel_direction)
                                 # Resize and process previous image
                                 # before saving to disk
-                                prev_image = cv2.cvtColor(full_image, cv2.COLOR_YUV2BGR)
+                                prev_image = full_image # cv2.cvtColor(full_image, cv2.COLOR_YUV2BGR)
                                 # Create a calibration image file name
                                 # There are no subdirectories to deal with
                                 if calibrate:
@@ -1619,10 +1674,10 @@ def speed_camera():
                                              track_w, track_h, biggest_area,
                                              travel_direction)
                                 # if track_count is over half way then do not start new track
-                                if track_count > track_counter / 2:
-                                    pass
-                                else:
-                                    first_event = True    # Too Far Away so restart Track
+                                #if track_count > track_counter / 2:
+                                #    pass
+                                #else:
+                                #    first_event = True    # Too Far Away so restart Track
                             # Did not move much so update event_timer
                             # and wait for next valid movement.
                             else:
@@ -1663,7 +1718,7 @@ def speed_camera():
             if show_thresh_on:
                 cv2.imshow('Threshold', differenceimage)
             if show_crop_on:
-                cv2.imshow('Crop Area', grayimage1)
+                cv2.imshow('Crop Area', cropped_image)
             if image_sign_on:
                 if time.time() - image_sign_view_time > image_sign_timeout:
                     # Cleanup the image_sign_view
@@ -1711,10 +1766,10 @@ if __name__ == '__main__':
             else:
                 logging.info("Initializing Pi Camera ....")
                 # Start a pi-camera video stream thread
-                vs = PiVideoStream().start()
-                vs.camera.rotation = CAMERA_ROTATION
-                vs.camera.hflip = CAMERA_HFLIP
-                vs.camera.vflip = CAMERA_VFLIP
+                vs = PiOpenCVVideoStream().start()
+                #vs.camera.rotation = CAMERA_ROTATION
+                #vs.camera.hflip = CAMERA_HFLIP
+                #vs.camera.vflip = CAMERA_VFLIP
                 time.sleep(2.0)  # Allow PiCamera to initialize
 
             # Get actual image size from stream.
